@@ -1,0 +1,8 @@
+.*
+*~
+\#*
+*.hi
+*.o
+*.thpp_hi
+*.thpp_o
+dist/
