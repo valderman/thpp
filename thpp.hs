@@ -20,18 +20,33 @@ outfile f = replaceExtension f "thpp"
 -- | Perform thpp magic on a single file.
 thpp :: FilePath -> Shell ()
 thpp f = do
-  lns <- lines <$> run "ghc"
-    [ "-v0"
-    , "-ddump-splices"
-    , "-hisuf", "thpp_hi"
-    , "-osuf", "thpp_o"
-    , "--make"
-    , "-c", f
-    ] ""
+  lns <- dumpSplices f `orElse` (rebuild f >> dumpSplices f)
   withFile f ReadMode $ \hin -> do
     src <- hGetContents hin
     withFile (outfile f) WriteMode $ \hout -> do
-      hPutStr hout (insertSplices (breakSplices lns) (lines src))
+      let splices = [ splice
+                    | splice <- breakSplices lns
+                    , locFile (spliceLoc splice) == f
+                    ]
+      hPutStr hout (insertSplices splices (lines src))
+
+ghcArgs :: FilePath -> [String]
+ghcArgs f =
+  [ "-v0"
+  , "--make"
+  , "-hisuf", "thpp_hi"
+  , "-osuf", "thpp_o"
+  , "-c", f
+  ]
+
+rebuild :: FilePath -> Shell ()
+rebuild f = void $ run "ghc" (ghcArgs f) ""
+
+dumpSplices :: FilePath -> Shell [String]
+dumpSplices f =
+    lines <$> run "ghc" args ""
+  where
+    args = "-fforce-recomp" : "-ddump-splices" : ghcArgs f
 
 -- | Input is assumed to be sorted on line/column in ascending order.
 groupSplices :: [Splice] -> [[Splice]]
@@ -56,7 +71,7 @@ insertSplicesLn splices =
     go 1 splices
   where
     go col (s:ss) cols =
-        concat [pre', "(", spliceContent s, ")", go (colTo+extraCol) ss post']
+        concat [pre', spliceToString s, go (colTo+extraCol) ss post']
       where
         -- from/to column as reported by -ddump-splices
         colFrom = locColFrom (spliceLoc s)
@@ -102,22 +117,36 @@ data Loc = Loc
   , locColTo   :: Int
   } deriving Show
 
+data SpliceType
+  = SpliceDecl
+  | SplicePat
+  | SpliceExpr
+    deriving Show
+
 -- | A splice consists of a location and the text to be spliced.
 data Splice = Splice
   { spliceLoc     :: Loc
+  , spliceType    :: SpliceType
   , spliceContent :: String
   } deriving Show
+
+spliceToString :: Splice -> String
+spliceToString s =
+  case spliceType s of
+    SpliceDecl -> spliceContent s
+    _          -> concat ["(", spliceContent s, ")"]
 
 -- | Find and parse all splices in a list of lines.
 breakSplices :: [String] -> [Splice]
 breakSplices (x:xs) =
-    Splice (parseHeading x) (intercalate "\n" splice') : breakSplices rest'
+    Splice loc type_ (intercalate "\n" splice') : breakSplices rest'
   where
     splicepart = drop 1 $ dropWhile (/= multiLineMarker) xs
     (splice, rest) = break (not . all (== ' ') . take 4) splicepart
     (splice', rest')
       | multiLineMarker `elem` xs = (map (drop 4) splice, rest)
       | otherwise                 = ([singleLineSplice (head xs)], tail xs)
+    (loc, type_) = parseHeading x
 breakSplices _ =
   []
 
@@ -140,12 +169,18 @@ singleLineSplice ln = go True singleLineMarker ln
     go _ [] cs    = dropWhile isSpace cs
     go _ _ _      = error "not a single line splice: `" ++ ln ++ "'"
 
--- | Read the heading of .
-parseHeading :: String -> Loc
+-- | Parse a splice heading.
+parseHeading :: String -> (Loc, SpliceType)
 parseHeading s =
-    Loc file (read line) (read from) (read to)
+    (Loc file (read line) (read from) (read to), type_)
   where
     (file, _:s')   = break (== ':') s
     (line, _:s'')  = break (== ':') s'
     (from, _:s''') = break (== '-') s''
-    (to,   _)      = break (== ':') s'''
+    (to,   _:rest) = break (== ':') s'''
+    type_ =
+      case words rest !! 1 of
+        "declarations" -> SpliceDecl
+        "expression"   -> SpliceExpr
+        "pattern"      -> SplicePat
+        _              -> error $ "unknown splice type: " ++ rest
