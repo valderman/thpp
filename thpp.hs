@@ -127,19 +127,19 @@ data SpliceType
 data Splice = Splice
   { spliceLoc     :: Loc
   , spliceType    :: SpliceType
-  , spliceContent :: String
+  , spliceContent :: [String]
   } deriving Show
 
 spliceToString :: Splice -> String
 spliceToString s =
   case spliceType s of
-    SpliceDecl -> spliceContent s
-    _          -> concat ["(", spliceContent s, ")"]
+    SpliceDecl -> intercalate "\n" (spliceContent s)
+    _          -> concat ["(", intercalate " " (spliceContent s), ")"]
 
 -- | Find and parse all splices in a list of lines.
 breakSplices :: [String] -> [Splice]
 breakSplices (x:xs) =
-    Splice loc type_ (intercalate "\n" splice') : breakSplices rest'
+    Splice loc type_ splice' : breakSplices rest'
   where
     splicepart = drop 1 $ dropWhile (/= multiLineMarker) xs
     (splice, rest) = break (not . all (== ' ') . take 4) splicepart
